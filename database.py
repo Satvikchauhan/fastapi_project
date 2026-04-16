@@ -1,37 +1,51 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
-#👉create_engine → connects to database
-#👉sessionmaker → creates DB sessions (like connection instances)
-#👉DeclarativeBase → base class for models (tables)
+# Import async SQLAlchemy tools
+# - AsyncSession → async DB session
+# - async_sessionmaker → creates async session factory
+# - create_async_engine → creates async DB connection
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-SQLALCHEMY_DATABASE_URL = "sqlite:///./blog.db"       #👉sqlite → database type , ./blog.db → file path#
+# Base class for defining database models (tables)
+from sqlalchemy.orm import DeclarativeBase
 
 
-#below 👉 Creates a connection to database
-engine = create_engine(
+# 🔹 Database connection URL
+# Using SQLite with async driver (aiosqlite)
+# Format: dialect+driver://path
+SQLALCHEMY_DATABASE_URL = "sqlite+aiosqlite:///./blog.db"
+
+
+# 🔹 Create async database engine (connection to DB)
+engine = create_async_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False},     #below 👉 Needed for SQLite in FastAPI Allows multiple requests (threads) Without this → app may crash
 
+    # Required for SQLite to allow multiple threads (FastAPI uses concurrency)
+    connect_args={"check_same_thread": False},
 )
 
-#below 👉 Creates a factory to generate DB sessions
-#Parameters:
-#autocommit=False → you control when to save
-#autoflush=False → no auto sync to DB
-#bind=engine → connect to DB engine
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# 🔹 Create async session factory
+# This will generate new DB sessions when needed
+AsyncSessionLocal = async_sessionmaker(
 
-#base class forall class
+    engine,                     # Bind session to DB engine
+    class_=AsyncSession,        # Use async session class
+    expire_on_commit=False,     # Prevent objects from expiring after commit
+)
+
+
+# 🔹 Base class for all ORM models (tables)
+# All your models will inherit from this
 class Base(DeclarativeBase):
     pass
 
-#👉 Provides a database session to your API
 
-#Step-by-step:
-#SessionLocal() → creates DB session
-##with → ensures it closes automatically
-#yield db → gives session to FastAPI
-def get_db():
-    with SessionLocal() as db:
-        yield db
+# 🔹 Dependency function for FastAPI
+# Provides a database session to each request
+async def get_db():
+
+    # Create a new async DB session
+    async with AsyncSessionLocal() as session:
+
+        # Yield session to API endpoint
+        # FastAPI will automatically close it after request
+        yield session
