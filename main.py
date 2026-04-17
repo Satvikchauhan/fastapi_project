@@ -1,39 +1,40 @@
-# Used to manage app startup and shutdown events
+# Used to manage startup and shutdown events for FastAPI app
 from contextlib import asynccontextmanager
 
 # Used for modern type hints with dependency injection
 from typing import Annotated
 
 
-# FastAPI imports:
+# FastAPI core imports:
 # Depends -> inject dependencies like database session
-# FastAPI -> main application object
+# FastAPI -> create main application
 # HTTPException -> raise custom errors
-# Request -> access request data
+# Request -> access incoming request object
 # status -> HTTP status codes
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 
 
-# Built-in FastAPI handlers for default API errors
+# Default FastAPI exception handlers
+# Used for API JSON responses
 from fastapi.exception_handlers import (
     http_exception_handler,
     request_validation_exception_handler,
 )
 
-# Validation error class (422 errors)
+# Handles request validation errors (422)
 from fastapi.exceptions import RequestValidationError
 
-# Serve CSS, JS, images
+# Serve CSS, JS, images, static assets
 from fastapi.staticfiles import StaticFiles
 
-# Render HTML templates using Jinja2
+# Render HTML templates with Jinja2
 from fastapi.templating import Jinja2Templates
 
 
 # SQLAlchemy query builder
 from sqlalchemy import select
 
-# Async DB session
+# Async database session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # Efficiently preload related tables (Post + author)
@@ -49,28 +50,25 @@ import models
 
 # Import DB setup
 # Base -> model base class
-# engine -> DB connection engine
+# engine -> database engine
 # get_db -> DB dependency function
 from database import Base, engine, get_db
 
 
-# Import routers
-# posts.py routes
-# users.py routes
+# Import modular routers
 from routers import posts, users
 
 
 # ==================================================
-# 🔄 APPLICATION LIFECYCLE
-# Runs on startup and shutdown
+# 🔄 APP LIFECYCLE (STARTUP / SHUTDOWN)
 # ==================================================
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
 
     # -----------------------------
-    # STARTUP EVENT
+    # STARTUP
     # -----------------------------
-    # Create database tables if they do not exist
+    # Create database tables if not already created
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -78,13 +76,14 @@ async def lifespan(_app: FastAPI):
     yield
 
     # -----------------------------
-    # SHUTDOWN EVENT
+    # SHUTDOWN
     # -----------------------------
     # Close database engine cleanly
     await engine.dispose()
 
 
-# Create FastAPI app and attach lifespan manager
+# Create FastAPI application
+# lifespan handles startup/shutdown tasks
 app = FastAPI(lifespan=lifespan)
 
 
@@ -103,7 +102,7 @@ app.mount("/media", StaticFiles(directory="media"), name="media")
 # 🎨 TEMPLATE ENGINE
 # ==================================================
 
-# Jinja2 HTML templates folder
+# Templates folder for HTML pages
 templates = Jinja2Templates(directory="templates")
 
 
@@ -111,35 +110,40 @@ templates = Jinja2Templates(directory="templates")
 # 🧩 INCLUDE ROUTERS
 # ==================================================
 
-# User APIs
+# Include user APIs
 # Example:
-# POST /api/users
-# GET /api/users/1
+# /api/users
+# /api/users/1
 app.include_router(users.router, prefix="/api/users", tags=["users"])
 
-# Post APIs
+# Include post APIs
 # Example:
-# GET /api/posts
-# POST /api/posts
+# /api/posts
+# /api/posts/1
 app.include_router(posts.router, prefix="/api/posts", tags=["posts"])
 
 
 # ==================================================
 # 🏠 HOME PAGE
-# Route: /   and   /posts
+# Routes:
+# / 
+# /posts
 # ==================================================
 @app.get("/", include_in_schema=False, name="home")
 @app.get("/posts", include_in_schema=False, name="posts")
 async def home(request: Request, db: Annotated[AsyncSession, Depends(get_db)]):
 
-    # Fetch all posts + author data
+    # Fetch all posts with author data
+    # Latest posts first
     result = await db.execute(
-        select(models.Post).options(selectinload(models.Post.author)),
+        select(models.Post)
+        .options(selectinload(models.Post.author))
+        .order_by(models.Post.date_posted.desc()),
     )
 
     posts = result.scalars().all()
 
-    # Render home.html
+    # Render home.html template
     return templates.TemplateResponse(
         request,
         "home.html",
@@ -158,7 +162,7 @@ async def post_page(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
 
-    # Fetch single post by ID + author
+    # Fetch post by ID + author
     result = await db.execute(
         select(models.Post)
         .options(selectinload(models.Post.author))
@@ -168,16 +172,17 @@ async def post_page(
     post = result.scalars().first()
 
     if post:
+        # Page title limited to 50 chars
         title = post.title[:50]
 
-        # Render post.html
+        # Render post.html template
         return templates.TemplateResponse(
             request,
             "post.html",
             {"post": post, "title": title},
         )
 
-    # If not found
+    # If post not found
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Post not found"
@@ -208,11 +213,13 @@ async def user_posts_page(
             detail="User not found",
         )
 
-    # Fetch all posts of that user
+    # Fetch all posts of this user
+    # Latest posts first
     result = await db.execute(
         select(models.Post)
         .options(selectinload(models.Post.author))
-        .where(models.Post.user_id == user_id),
+        .where(models.Post.user_id == user_id)
+        .order_by(models.Post.date_posted.desc()),
     )
 
     posts = result.scalars().all()
@@ -231,6 +238,7 @@ async def user_posts_page(
 
 # ==================================================
 # ⚠️ GENERAL HTTP ERROR HANDLER
+# Handles 404, 400 etc.
 # ==================================================
 @app.exception_handler(StarletteHTTPException)
 async def general_http_exception_handler(
@@ -238,7 +246,8 @@ async def general_http_exception_handler(
     exception: StarletteHTTPException,
 ):
 
-    # If API request (/api/...) return JSON error
+    # If request is API route (/api)
+    # Return default JSON response
     if request.url.path.startswith("/api"):
         return await http_exception_handler(request, exception)
 
@@ -263,7 +272,7 @@ async def general_http_exception_handler(
 
 # ==================================================
 # ⚠️ VALIDATION ERROR HANDLER
-# Handles wrong input types / missing fields
+# Handles wrong input / missing fields
 # ==================================================
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
@@ -271,14 +280,14 @@ async def validation_exception_handler(
     exception: RequestValidationError,
 ):
 
-    # API requests → return default JSON validation error
+    # API request -> return JSON validation errors
     if request.url.path.startswith("/api"):
         return await request_validation_exception_handler(
             request,
             exception,
         )
 
-    # UI requests → show HTML error page
+    # UI request -> render error page
     return templates.TemplateResponse(
         request,
         "error.html",

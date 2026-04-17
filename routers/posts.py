@@ -2,33 +2,36 @@
 from typing import Annotated
 
 # FastAPI imports:
-# APIRouter -> used to group related routes (posts routes)
-# Depends -> dependency injection (get_db)
-# HTTPException -> raise API errors
+# APIRouter -> group all post routes in one file
+# Depends -> inject database dependency
+# HTTPException -> raise custom API errors
 # status -> HTTP status codes like 201, 404
 from fastapi import APIRouter, Depends, HTTPException, status
 
-# SQLAlchemy select query builder
+# SQLAlchemy query builder
 from sqlalchemy import select
 
 # Async database session
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Loads related data efficiently (Post + author)
+# Used to preload related data efficiently (Post + author)
 from sqlalchemy.orm import selectinload
 
 # Import database models (User, Post)
 import models
 
-# Import DB dependency function
+# Import database dependency function
 from database import get_db
 
-# Import request/response schemas
+# Import schemas:
+# PostCreate -> input for create/put
+# PostResponse -> output response schema
+# PostUpdate -> partial update schema for patch
 from schemas import PostCreate, PostResponse, PostUpdate
 
 
 # Create router object
-# This file will later be included in main.py
+# Will be included in main.py
 router = APIRouter()
 
 
@@ -39,19 +42,23 @@ router = APIRouter()
 @router.get("", response_model=list[PostResponse])
 async def get_posts(db: Annotated[AsyncSession, Depends(get_db)]):
 
-    # Fetch all posts + related author data
+    # Fetch all posts
+    # selectinload loads author relationship in same request efficiently
+    # order_by sorts latest posts first
     result = await db.execute(
-        select(models.Post).options(selectinload(models.Post.author)),
+        select(models.Post)
+        .options(selectinload(models.Post.author))
+        .order_by(models.Post.date_posted.desc()),
     )
 
-    # Convert result into Python list
+    # Convert query result into Python list
     posts = result.scalars().all()
 
     return posts
 
 
 # ==================================================
-# 📝 CREATE NEW POST
+# 📝 CREATE POST
 # Route: POST /api/posts
 # ==================================================
 @router.post(
@@ -68,24 +75,23 @@ async def create_post(post: PostCreate, db: Annotated[AsyncSession, Depends(get_
 
     user = result.scalars().first()
 
-    # If user not found → error
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
 
-    # Create new Post object
+    # Create new post object
     new_post = models.Post(
         title=post.title,
         content=post.content,
         user_id=post.user_id,
     )
 
-    # Add to DB session
+    # Add object to DB session
     db.add(new_post)
 
-    # Save changes
+    # Save to database
     await db.commit()
 
     # Refresh object and load author relationship
@@ -101,7 +107,7 @@ async def create_post(post: PostCreate, db: Annotated[AsyncSession, Depends(get_
 @router.get("/{post_id}", response_model=PostResponse)
 async def get_post(post_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
 
-    # Fetch one post by ID + author
+    # Find one post by ID + load author
     result = await db.execute(
         select(models.Post)
         .options(selectinload(models.Post.author))
@@ -113,7 +119,7 @@ async def get_post(post_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
     if post:
         return post
 
-    # If not found
+    # If post not found
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Post not found"
@@ -145,11 +151,13 @@ async def update_post_full(
             detail="Post not found",
         )
 
-    # If user_id changed, validate new user exists
+    # If changing user_id, validate new user exists
     if post_data.user_id != post.user_id:
 
         result = await db.execute(
-            select(models.User).where(models.User.id == post_data.user_id),
+            select(models.User).where(
+                models.User.id == post_data.user_id
+            ),
         )
 
         user = result.scalars().first()
@@ -168,7 +176,7 @@ async def update_post_full(
     # Save changes
     await db.commit()
 
-    # Reload author relation
+    # Reload relationship data
     await db.refresh(post, attribute_names=["author"])
 
     return post
@@ -177,7 +185,7 @@ async def update_post_full(
 # ==================================================
 # 📝 PARTIAL UPDATE POST
 # Route: PATCH /api/posts/{post_id}
-# PATCH updates only sent fields
+# PATCH updates only provided fields
 # ==================================================
 @router.patch("/{post_id}", response_model=PostResponse)
 async def update_post_partial(
@@ -209,7 +217,7 @@ async def update_post_partial(
     # Save changes
     await db.commit()
 
-    # Reload author relation
+    # Reload relationship data
     await db.refresh(post, attribute_names=["author"])
 
     return post
@@ -222,7 +230,7 @@ async def update_post_partial(
 @router.delete("/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_post(post_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
 
-    # Find post
+    # Find post by ID
     result = await db.execute(
         select(models.Post).where(models.Post.id == post_id)
     )
@@ -235,7 +243,7 @@ async def delete_post(post_id: int, db: Annotated[AsyncSession, Depends(get_db)]
             detail="Post not found",
         )
 
-    # Delete post
+    # Delete post from database
     await db.delete(post)
 
     # Save deletion
