@@ -1,33 +1,32 @@
-# Used to manage startup and shutdown events for FastAPI app
+# Used to manage startup and shutdown lifecycle events
 from contextlib import asynccontextmanager
 
 # Used for modern type hints with dependency injection
 from typing import Annotated
 
 
-# FastAPI core imports:
-# Depends -> inject dependencies like database session
-# FastAPI -> create main application
-# HTTPException -> raise custom errors
-# Request -> access incoming request object
+# FastAPI imports:
+# Depends -> inject dependencies like DB session
+# FastAPI -> create app instance
+# HTTPException -> raise errors
+# Request -> access request object
 # status -> HTTP status codes
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 
 
-# Default FastAPI exception handlers
-# Used for API JSON responses
+# Built-in FastAPI exception handlers for API JSON responses
 from fastapi.exception_handlers import (
     http_exception_handler,
     request_validation_exception_handler,
 )
 
-# Handles request validation errors (422)
+# Validation error class (422 errors)
 from fastapi.exceptions import RequestValidationError
 
-# Serve CSS, JS, images, static assets
+# Serve CSS / JS / images
 from fastapi.staticfiles import StaticFiles
 
-# Render HTML templates with Jinja2
+# Render HTML templates
 from fastapi.templating import Jinja2Templates
 
 
@@ -37,7 +36,7 @@ from sqlalchemy import select
 # Async database session
 from sqlalchemy.ext.asyncio import AsyncSession
 
-# Efficiently preload related tables (Post + author)
+# Efficient relationship loading
 from sqlalchemy.orm import selectinload
 
 
@@ -45,45 +44,40 @@ from sqlalchemy.orm import selectinload
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
-# Import database models
+# Import ORM models
 import models
 
-# Import DB setup
-# Base -> model base class
-# engine -> database engine
-# get_db -> DB dependency function
+# Import database setup
 from database import Base, engine, get_db
 
-
-# Import modular routers
+# Import routers
 from routers import posts, users
 
 
 # ==================================================
-# 🔄 APP LIFECYCLE (STARTUP / SHUTDOWN)
+# 🔄 APP STARTUP / SHUTDOWN
 # ==================================================
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
 
-    # -----------------------------
+    # -------------------------
     # STARTUP
-    # -----------------------------
-    # Create database tables if not already created
+    # -------------------------
+    # Create DB tables if missing
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # App runs after this line
+    # App runs here
     yield
 
-    # -----------------------------
+    # -------------------------
     # SHUTDOWN
-    # -----------------------------
-    # Close database engine cleanly
+    # -------------------------
+    # Close DB engine
     await engine.dispose()
 
 
-# Create FastAPI application
-# lifespan handles startup/shutdown tasks
+# Create FastAPI app
 app = FastAPI(lifespan=lifespan)
 
 
@@ -91,7 +85,7 @@ app = FastAPI(lifespan=lifespan)
 # 📁 STATIC FILES
 # ==================================================
 
-# Serve CSS / JS / images
+# Serve CSS, JS, images
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Serve uploaded media files
@@ -102,7 +96,7 @@ app.mount("/media", StaticFiles(directory="media"), name="media")
 # 🎨 TEMPLATE ENGINE
 # ==================================================
 
-# Templates folder for HTML pages
+# Templates folder
 templates = Jinja2Templates(directory="templates")
 
 
@@ -110,30 +104,37 @@ templates = Jinja2Templates(directory="templates")
 # 🧩 INCLUDE ROUTERS
 # ==================================================
 
-# Include user APIs
-# Example:
+# Include user API routes
 # /api/users
-# /api/users/1
-app.include_router(users.router, prefix="/api/users", tags=["users"])
+app.include_router(
+    users.router,
+    prefix="/api/users",
+    tags=["users"]
+)
 
-# Include post APIs
-# Example:
+# Include post API routes
 # /api/posts
-# /api/posts/1
-app.include_router(posts.router, prefix="/api/posts", tags=["posts"])
+app.include_router(
+    posts.router,
+    prefix="/api/posts",
+    tags=["posts"]
+)
 
 
 # ==================================================
 # 🏠 HOME PAGE
 # Routes:
-# / 
+# /
 # /posts
 # ==================================================
 @app.get("/", include_in_schema=False, name="home")
 @app.get("/posts", include_in_schema=False, name="posts")
-async def home(request: Request, db: Annotated[AsyncSession, Depends(get_db)]):
+async def home(
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
 
-    # Fetch all posts with author data
+    # Fetch all posts + author data
     # Latest posts first
     result = await db.execute(
         select(models.Post)
@@ -143,7 +144,7 @@ async def home(request: Request, db: Annotated[AsyncSession, Depends(get_db)]):
 
     posts = result.scalars().all()
 
-    # Render home.html template
+    # Render home page
     return templates.TemplateResponse(
         request,
         "home.html",
@@ -162,7 +163,7 @@ async def post_page(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
 
-    # Fetch post by ID + author
+    # Fetch single post by ID
     result = await db.execute(
         select(models.Post)
         .options(selectinload(models.Post.author))
@@ -172,10 +173,11 @@ async def post_page(
     post = result.scalars().first()
 
     if post:
-        # Page title limited to 50 chars
+
+        # Use first 50 chars as title
         title = post.title[:50]
 
-        # Render post.html template
+        # Render post page
         return templates.TemplateResponse(
             request,
             "post.html",
@@ -185,7 +187,7 @@ async def post_page(
     # If post not found
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail="Post not found"
+        detail="Post not found",
     )
 
 
@@ -193,16 +195,22 @@ async def post_page(
 # 👤 USER POSTS PAGE
 # Route: /users/{user_id}/posts
 # ==================================================
-@app.get("/users/{user_id}/posts", include_in_schema=False, name="user_posts")
+@app.get(
+    "/users/{user_id}/posts",
+    include_in_schema=False,
+    name="user_posts",
+)
 async def user_posts_page(
     request: Request,
     user_id: int,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
 
-    # Check if user exists
+    # Check user exists
     result = await db.execute(
-        select(models.User).where(models.User.id == user_id)
+        select(models.User).where(
+            models.User.id == user_id
+        )
     )
 
     user = result.scalars().first()
@@ -213,8 +221,7 @@ async def user_posts_page(
             detail="User not found",
         )
 
-    # Fetch all posts of this user
-    # Latest posts first
+    # Fetch all posts by that user
     result = await db.execute(
         select(models.Post)
         .options(selectinload(models.Post.author))
@@ -224,15 +231,45 @@ async def user_posts_page(
 
     posts = result.scalars().all()
 
-    # Render user_posts.html
+    # Render user posts page
     return templates.TemplateResponse(
         request,
         "user_posts.html",
         {
             "posts": posts,
             "user": user,
-            "title": f"{user.username}'s Posts"
+            "title": f"{user.username}'s Posts",
         },
+    )
+
+
+# ==================================================
+# 🔐 LOGIN PAGE
+# Route: /login
+# ==================================================
+@app.get("/login", include_in_schema=False)
+async def login_page(request: Request):
+
+    # Render login page
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"title": "Login"},
+    )
+
+
+# ==================================================
+# 📝 REGISTER PAGE
+# Route: /register
+# ==================================================
+@app.get("/register", include_in_schema=False)
+async def register_page(request: Request):
+
+    # Render register page
+    return templates.TemplateResponse(
+        request,
+        "register.html",
+        {"title": "Register"},
     )
 
 
@@ -246,12 +283,14 @@ async def general_http_exception_handler(
     exception: StarletteHTTPException,
 ):
 
-    # If request is API route (/api)
-    # Return default JSON response
+    # If API route, return JSON error
     if request.url.path.startswith("/api"):
-        return await http_exception_handler(request, exception)
+        return await http_exception_handler(
+            request,
+            exception,
+        )
 
-    # Otherwise show HTML error page
+    # UI route -> show HTML error page
     message = (
         exception.detail
         if exception.detail
@@ -272,7 +311,7 @@ async def general_http_exception_handler(
 
 # ==================================================
 # ⚠️ VALIDATION ERROR HANDLER
-# Handles wrong input / missing fields
+# Handles wrong inputs / missing fields
 # ==================================================
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
@@ -280,14 +319,14 @@ async def validation_exception_handler(
     exception: RequestValidationError,
 ):
 
-    # API request -> return JSON validation errors
+    # API request -> JSON validation error
     if request.url.path.startswith("/api"):
         return await request_validation_exception_handler(
             request,
             exception,
         )
 
-    # UI request -> render error page
+    # UI request -> HTML error page
     return templates.TemplateResponse(
         request,
         "error.html",
